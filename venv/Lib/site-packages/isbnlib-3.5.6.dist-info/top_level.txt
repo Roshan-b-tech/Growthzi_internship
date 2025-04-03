@@ -1,0 +1,4 @@
+isbnlib/test
+isbnlib
+isbnlib/_data
+isbnlib/dev
