@@ -1,8 +1,14 @@
 from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity, get_jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 from ..models.user import User
-from datetime import timedelta
+from datetime import timedelta, datetime
+from bson import ObjectId
+from ..models.cart import Cart
+from ..models.order import Order
+from ..models.coupon import Coupon
+from ..utils.email import send_email
+import uuid
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -27,7 +33,7 @@ def register():
         email=data['email'],
         password=data['password'],  # Plain password, will be hashed in save()
         name=data['name'],
-        role='customer'  # Default role
+        role=data.get('role', 'customer')  # Use provided role or default to 'customer'
     )
     
     # Save user to database
@@ -135,4 +141,75 @@ def update_current_user():
     
     user.update(current_app.db)
     
-    return jsonify(user.to_dict()), 200 
+    return jsonify(user.to_dict()), 200
+
+@auth_bp.route('/logout', methods=['POST'])
+@jwt_required()
+def logout():
+    # Get the token's jti (JWT ID)
+    jti = get_jwt()['jti']
+    
+    # Add the token to the blocklist
+    current_app.db.token_blocklist.insert_one({
+        'jti': jti,
+        'blocklisted_at': datetime.utcnow()
+    })
+    
+    return jsonify({'message': 'Successfully logged out'}), 200
+
+@auth_bp.route('/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    current_user_id = get_jwt_identity()
+    user = User.get_by_id(current_app.db, current_user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify(user.to_dict()), 200
+
+@auth_bp.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    current_user_id = get_jwt_identity()
+    user = User.get_by_id(current_app.db, current_user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    # Update allowed fields
+    if 'username' in data:
+        user.username = data['username']
+    if 'email' in data:
+        # Check if email is already taken
+        existing_user = User.get_by_email(current_app.db, data['email'])
+        if existing_user and str(existing_user.id) != str(current_user_id):
+            return jsonify({'error': 'Email already registered'}), 400
+        user.email = data['email']
+    
+    user.updated_at = datetime.utcnow()
+    user.save(current_app.db)
+    
+    return jsonify(user.to_dict()), 200
+
+@auth_bp.route('/change-password', methods=['PUT'])
+@jwt_required()
+def change_password():
+    current_user_id = get_jwt_identity()
+    user = User.get_by_id(current_app.db, current_user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.get_json()
+    if not data or 'current_password' not in data or 'new_password' not in data:
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    if not user.check_password(data['current_password']):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+    
+    user.set_password(data['new_password'])
+    user.updated_at = datetime.utcnow()
+    user.save(current_app.db)
+    
+    return jsonify({'message': 'Password updated successfully'}), 200 

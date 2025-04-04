@@ -1,15 +1,14 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from ..models.coupon import Coupon
 from ..models.user import User
-from .. import jwt
 from datetime import datetime, timedelta
 
 coupons_bp = Blueprint('coupons', __name__)
 
 def admin_required():
     current_user_id = get_jwt_identity()
-    user = User.get_by_id(jwt.db, current_user_id)
+    user = User.get_by_id(current_app.db, current_user_id)
     if not user or user.role != 'admin':
         return False
     return True
@@ -60,10 +59,10 @@ def create_coupon():
     )
     
     # Check if coupon code already exists
-    if Coupon.get_by_code(jwt.db, coupon.code):
+    if Coupon.get_by_code(current_app.db, coupon.code):
         return jsonify({'error': 'Coupon code already exists'}), 409
     
-    coupon.save(jwt.db)
+    coupon.save(current_app.db)
     
     return jsonify(coupon.to_dict()), 201
 
@@ -76,7 +75,7 @@ def get_coupons():
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 10))
     
-    coupons, total = Coupon.get_all(jwt.db, page, per_page)
+    coupons, total = Coupon.get_all(current_app.db, page, per_page)
     
     return jsonify({
         'coupons': [coupon.to_dict() for coupon in coupons],
@@ -87,7 +86,7 @@ def get_coupons():
 
 @coupons_bp.route('/<code>', methods=['GET'])
 def get_coupon(code):
-    coupon = Coupon.get_by_code(jwt.db, code)
+    coupon = Coupon.get_by_code(current_app.db, code)
     if not coupon:
         return jsonify({'error': 'Coupon not found'}), 404
     
@@ -99,17 +98,14 @@ def validate_coupon():
     if 'code' not in data:
         return jsonify({'error': 'Missing coupon code'}), 400
     
-    coupon = Coupon.get_by_code(jwt.db, data['code'])
+    coupon = Coupon.get_by_code(current_app.db, data['code'])
     if not coupon:
         return jsonify({'error': 'Invalid coupon code'}), 404
     
     if not coupon.is_valid():
         return jsonify({'error': 'Coupon is not valid'}), 400
     
-    return jsonify({
-        'valid': True,
-        'coupon': coupon.to_dict()
-    }), 200
+    return jsonify(coupon.to_dict()), 200
 
 @coupons_bp.route('/<code>', methods=['PUT'])
 @jwt_required()
@@ -117,7 +113,7 @@ def update_coupon(code):
     if not admin_required():
         return jsonify({'error': 'Admin privileges required'}), 403
     
-    coupon = Coupon.get_by_code(jwt.db, code)
+    coupon = Coupon.get_by_code(current_app.db, code)
     if not coupon:
         return jsonify({'error': 'Coupon not found'}), 404
     
@@ -144,17 +140,17 @@ def update_coupon(code):
         try:
             coupon.min_purchase = float(data['min_purchase'])
         except ValueError:
-            return jsonify({'error': 'Invalid minimum purchase amount'}), 400
+            return jsonify({'error': 'Invalid min purchase value'}), 400
     
     if 'max_discount' in data:
         try:
             coupon.max_discount = float(data['max_discount']) if data['max_discount'] else None
         except ValueError:
-            return jsonify({'error': 'Invalid maximum discount amount'}), 400
+            return jsonify({'error': 'Invalid max discount value'}), 400
     
     if 'start_date' in data:
         try:
-            coupon.start_date = datetime.fromisoformat(data['start_date'])
+            coupon.start_date = datetime.fromisoformat(data['start_date']) if data['start_date'] else None
         except ValueError:
             return jsonify({'error': 'Invalid start date format'}), 400
     
@@ -168,9 +164,9 @@ def update_coupon(code):
         try:
             coupon.usage_limit = int(data['usage_limit']) if data['usage_limit'] else None
         except ValueError:
-            return jsonify({'error': 'Invalid usage limit'}), 400
+            return jsonify({'error': 'Invalid usage limit value'}), 400
     
-    coupon.save(jwt.db)
+    coupon.save(current_app.db)
     
     return jsonify(coupon.to_dict()), 200
 
@@ -180,10 +176,10 @@ def delete_coupon(code):
     if not admin_required():
         return jsonify({'error': 'Admin privileges required'}), 403
     
-    coupon = Coupon.get_by_code(jwt.db, code)
+    coupon = Coupon.get_by_code(current_app.db, code)
     if not coupon:
         return jsonify({'error': 'Coupon not found'}), 404
     
-    jwt.db.coupons.delete_one({'code': code})
+    coupon.delete(current_app.db)
     
-    return jsonify({'message': 'Coupon deleted successfully'}), 200 
+    return '', 204 

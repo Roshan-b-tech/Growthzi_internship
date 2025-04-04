@@ -4,6 +4,7 @@ from ..models.product import Product
 from ..models.user import User
 from .. import jwt
 import json
+from bson import ObjectId
 
 products_bp = Blueprint('products', __name__)
 
@@ -16,81 +17,66 @@ def admin_required():
 
 @products_bp.route('/', methods=['GET'])
 def get_products():
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
     
-    # Try to get from cache
-    cache_key = f'products_page_{page}_per_page_{per_page}'
-    cached_data = current_app.redis.get(cache_key)
-    if cached_data:
-        return jsonify(json.loads(cached_data))
-    
-    # If not in cache, get from database
-    products, total = Product.get_all(current_app.db, page=page, per_page=per_page)
-    
-    result = {
+    products, total = Product.get_all(current_app.db, page, per_page)
+    return jsonify({
         'products': [product.to_dict() for product in products],
         'total': total,
         'page': page,
         'per_page': per_page
-    }
-    
-    # Cache the result
-    current_app.redis.setex(cache_key, 300, json.dumps(result))  # Cache for 5 minutes
-    
-    return jsonify(result)
+    })
 
-@products_bp.route('/<product_id>', methods=['GET'])
-def get_product(product_id):
-    # Try to get from cache
-    cache_key = f'product_{product_id}'
-    cached_data = current_app.redis.get(cache_key)
-    if cached_data:
-        return jsonify(json.loads(cached_data))
-    
-    product = Product.get_by_id(current_app.db, product_id)
-    if not product:
-        return jsonify({'error': 'Product not found'}), 404
-    
-    result = product.to_dict()
-    
-    # Cache the result
-    current_app.redis.setex(cache_key, 300, json.dumps(result))  # Cache for 5 minutes
-    
-    return jsonify(result)
+@products_bp.route('/featured', methods=['GET'])
+def get_featured_products():
+    # For now, just return the first 5 products as featured
+    # In a real application, you would have a 'featured' flag in the product model
+    products = Product.get_all(current_app.db, 1, 5)[0]
+    return jsonify({
+        'products': [product.to_dict() for product in products]
+    })
 
 @products_bp.route('/', methods=['POST'])
 @jwt_required()
 def create_product():
-    if not admin_required():
-        return jsonify({'error': 'Admin access required'}), 403
-    
+    current_user_id = get_jwt_identity()
     data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
     
-    required_fields = ['name', 'description', 'price', 'stock', 'category']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'error': f'Missing required field: {field}'}), 400
+    if not data or 'name' not in data or 'price' not in data or 'stock' not in data or 'category' not in data:
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    try:
+        price = float(data['price'])
+        stock = int(data['stock'])
+        if price <= 0 or stock < 0:
+            return jsonify({'error': 'Price and stock must be positive'}), 400
+    except ValueError:
+        return jsonify({'error': 'Invalid price or stock value'}), 400
     
     product = Product(
         name=data['name'],
-        description=data['description'],
-        price=float(data['price']),
-        stock=int(data['stock']),
+        price=price,
+        stock=stock,
         category=data['category'],
+        description=data.get('description', ''),
         image_url=data.get('image_url')
     )
     
     product.save(current_app.db)
-    
-    # Clear product list cache
-    current_app.redis.delete(*current_app.redis.keys('products_page_*'))
-    
     return jsonify(product.to_dict()), 201
 
-@products_bp.route('/<product_id>', methods=['PUT'])
+@products_bp.route('/<product_id>', methods=['GET'])
+def get_product(product_id):
+    try:
+        product = Product.get_by_id(current_app.db, product_id)
+        if not product:
+            return jsonify({'error': 'Product not found'}), 404
+        return jsonify(product.to_dict())
+    except:
+        return jsonify({'error': 'Invalid product ID'}), 400
+
+@products_bp.route('/', methods=['PUT'])
 @jwt_required()
 def update_product(product_id):
     if not admin_required():
